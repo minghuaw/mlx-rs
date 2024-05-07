@@ -43,7 +43,7 @@
 //! ```
 
 use std::{
-    borrow::Cow,
+    borrow::{Borrow, Cow},
     ops::{Bound, RangeBounds},
     rc::Rc,
 };
@@ -166,15 +166,15 @@ impl RangeIndex {
 }
 
 #[derive(Debug, Clone)]
-pub enum ArrayIndexOp {
+pub enum ArrayIndexOp<'a> {
     Ellipsis,
     TakeIndex { index: i32 },
-    TakeArray { indices: Rc<Array> },
+    TakeArray { indices: Cow<'a, Array> },
     Slice(RangeIndex),
     ExpandDims,
 }
 
-impl ArrayIndexOp {
+impl<'a> ArrayIndexOp<'a> {
     fn is_array_or_index(&self) -> bool {
         matches!(
             self,
@@ -222,42 +222,50 @@ impl IndexBounds for std::ops::RangeToInclusive<i32> {}
 /*                               Implementation                               */
 /* -------------------------------------------------------------------------- */
 
-pub trait ArrayIndex {
+pub trait ArrayIndex<'a> {
     /// `mlx` allows out of bounds indexing.
-    fn index_op(self) -> ArrayIndexOp;
+    fn index_op(self) -> ArrayIndexOp<'a>;
 }
 
-impl ArrayIndex for i32 {
-    fn index_op(self) -> ArrayIndexOp {
+impl<'a> ArrayIndex<'a> for i32 {
+    fn index_op(self) -> ArrayIndexOp<'a> {
         ArrayIndexOp::TakeIndex { index: self }
     }
 }
 
-impl ArrayIndex for NewAxis {
-    fn index_op(self) -> ArrayIndexOp {
+impl<'a> ArrayIndex<'a> for NewAxis {
+    fn index_op(self) -> ArrayIndexOp<'a> {
         ArrayIndexOp::ExpandDims
     }
 }
 
-impl ArrayIndex for Ellipsis {
-    fn index_op(self) -> ArrayIndexOp {
+impl<'a> ArrayIndex<'a> for Ellipsis {
+    fn index_op(self) -> ArrayIndexOp<'a> {
         ArrayIndexOp::Ellipsis
     }
 }
 
-impl ArrayIndex for Array {
-    fn index_op(self) -> ArrayIndexOp {
+impl<'a> ArrayIndex<'a> for Array {
+    fn index_op(self) -> ArrayIndexOp<'a> {
         ArrayIndexOp::TakeArray {
-            indices: Rc::new(self),
+            indices: Cow::Owned(self),
         }
     }
 }
 
-impl<T> ArrayIndex for T
+impl<'a, 'b: 'a> ArrayIndex<'a> for &'b Array {
+    fn index_op(self) -> ArrayIndexOp<'a> {
+        ArrayIndexOp::TakeArray {
+            indices: Cow::Borrowed(self),
+        }
+    }
+}
+
+impl<'a, T> ArrayIndex<'a> for T
 where
     T: IndexBounds,
 {
-    fn index_op(self) -> ArrayIndexOp {
+    fn index_op(self) -> ArrayIndexOp<'a> {
         ArrayIndexOp::Slice(RangeIndex::new(
             self.start_bound().cloned(),
             self.end_bound().cloned(),
@@ -266,11 +274,11 @@ where
     }
 }
 
-impl<T> ArrayIndex for StrideBy<T>
+impl<'a, T> ArrayIndex<'a> for StrideBy<T>
 where
     T: IndexBounds,
 {
-    fn index_op(self) -> ArrayIndexOp {
+    fn index_op(self) -> ArrayIndexOp<'a> {
         ArrayIndexOp::Slice(RangeIndex::new(
             self.iter.start_bound().cloned(),
             self.iter.end_bound().cloned(),
@@ -405,7 +413,7 @@ impl Array {
 
 impl<T> IndexOp<T> for Array
 where
-    T: ArrayIndex,
+    for<'a> T: ArrayIndex<'a>,
 {
     fn index_device(&self, i: T, stream: StreamOrDevice) -> Array {
         get_item(self, i, stream)
@@ -414,7 +422,7 @@ where
 
 impl<A> IndexOp<(A,)> for Array
 where
-    A: ArrayIndex,
+    for<'a> A: ArrayIndex<'a>,
 {
     fn index_device(&self, i: (A,), stream: StreamOrDevice) -> Array {
         let i = [i.0.index_op()];
@@ -424,8 +432,8 @@ where
 
 impl<A, B> IndexOp<(A, B)> for Array
 where
-    A: ArrayIndex,
-    B: ArrayIndex,
+    for<'a> A: ArrayIndex<'a>,
+    for<'a> B: ArrayIndex<'a>,
 {
     fn index_device(&self, i: (A, B), stream: StreamOrDevice) -> Array {
         let i = [i.0.index_op(), i.1.index_op()];
@@ -435,9 +443,9 @@ where
 
 impl<A, B, C> IndexOp<(A, B, C)> for Array
 where
-    A: ArrayIndex,
-    B: ArrayIndex,
-    C: ArrayIndex,
+    for<'a> A: ArrayIndex<'a>,
+    for<'a> B: ArrayIndex<'a>,
+    for<'a> C: ArrayIndex<'a>,
 {
     fn index_device(&self, i: (A, B, C), stream: StreamOrDevice) -> Array {
         let i = [i.0.index_op(), i.1.index_op(), i.2.index_op()];
@@ -447,10 +455,10 @@ where
 
 impl<A, B, C, D> IndexOp<(A, B, C, D)> for Array
 where
-    A: ArrayIndex,
-    B: ArrayIndex,
-    C: ArrayIndex,
-    D: ArrayIndex,
+    for<'a> A: ArrayIndex<'a>,
+    for<'a> B: ArrayIndex<'a>,
+    for<'a> C: ArrayIndex<'a>,
+    for<'a> D: ArrayIndex<'a>,
 {
     fn index_device(&self, i: (A, B, C, D), stream: StreamOrDevice) -> Array {
         let i = [
@@ -465,11 +473,11 @@ where
 
 impl<A, B, C, D, E> IndexOp<(A, B, C, D, E)> for Array
 where
-    A: ArrayIndex,
-    B: ArrayIndex,
-    C: ArrayIndex,
-    D: ArrayIndex,
-    E: ArrayIndex,
+    for<'a> A: ArrayIndex<'a>,
+    for<'a> B: ArrayIndex<'a>,
+    for<'a> C: ArrayIndex<'a>,
+    for<'a> D: ArrayIndex<'a>,
+    for<'a> E: ArrayIndex<'a>,
 {
     fn index_device(&self, i: (A, B, C, D, E), stream: StreamOrDevice) -> Array {
         let i = [
@@ -485,12 +493,12 @@ where
 
 impl<A, B, C, D, E, F> IndexOp<(A, B, C, D, E, F)> for Array
 where
-    A: ArrayIndex,
-    B: ArrayIndex,
-    C: ArrayIndex,
-    D: ArrayIndex,
-    E: ArrayIndex,
-    F: ArrayIndex,
+    for<'a> A: ArrayIndex<'a>,
+    for<'a> B: ArrayIndex<'a>,
+    for<'a> C: ArrayIndex<'a>,
+    for<'a> D: ArrayIndex<'a>,
+    for<'a> E: ArrayIndex<'a>,
+    for<'a> F: ArrayIndex<'a>,
 {
     fn index_device(&self, i: (A, B, C, D, E, F), stream: StreamOrDevice) -> Array {
         let i = [
@@ -500,6 +508,30 @@ where
             i.3.index_op(),
             i.4.index_op(),
             i.5.index_op(),
+        ];
+        get_item_nd(self, &i, stream)
+    }
+}
+
+impl<A, B, C, D, E, F, G> IndexOp<(A, B, C, D, E, F, G)> for Array
+where
+    for<'a> A: ArrayIndex<'a>,
+    for<'a> B: ArrayIndex<'a>,
+    for<'a> C: ArrayIndex<'a>,
+    for<'a> D: ArrayIndex<'a>,
+    for<'a> E: ArrayIndex<'a>,
+    for<'a> F: ArrayIndex<'a>,
+    for<'a> G: ArrayIndex<'a>,
+{
+    fn index_device(&self, i: (A, B, C, D, E, F, G), stream: StreamOrDevice) -> Array {
+        let i = [
+            i.0.index_op(),
+            i.1.index_op(),
+            i.2.index_op(),
+            i.3.index_op(),
+            i.4.index_op(),
+            i.5.index_op(),
+            i.6.index_op(),
         ];
         get_item_nd(self, &i, stream)
     }
@@ -568,7 +600,7 @@ impl Array {
 #[inline]
 fn gather_nd<'a>(
     src: &'a Array,
-    operations: impl Iterator<Item = &'a ArrayIndexOp>,
+    operations: impl Iterator<Item = &'a ArrayIndexOp<'a>>,
     gather_first: bool,
     stream: StreamOrDevice,
 ) -> (usize, Array) {
@@ -577,7 +609,7 @@ fn gather_nd<'a>(
     let mut max_dims = 0;
     let mut slice_count = 0;
     let mut is_slice: Vec<bool> = Vec::new();
-    let mut gather_indices: Vec<Rc<Array>> = Vec::new();
+    let mut gather_indices: Vec<Cow<Array>> = Vec::new();
 
     let shape = src.shape();
 
@@ -593,7 +625,7 @@ fn gather_nd<'a>(
                     *index,
                     src.dim(i as i32) as usize,
                 ) as i32);
-                gather_indices.push(Rc::new(item));
+                gather_indices.push(Cow::Owned(item));
                 is_slice.push(false);
             }
             Slice(range) => {
@@ -610,12 +642,12 @@ fn gather_nd<'a>(
                     .collect();
                 let item = Array::from_slice(&indices, &[indices.len() as i32]);
 
-                gather_indices.push(Rc::new(item));
+                gather_indices.push(Cow::Owned(item));
             }
             TakeArray { indices } => {
                 is_slice.push(false);
                 max_dims = max_dims.max(indices.ndim());
-                gather_indices.push(Rc::clone(indices));
+                gather_indices.push(Cow::Borrowed(indices.borrow()));
             }
             Ellipsis | ExpandDims => {
                 unreachable!("Unexpected operation in gather_nd")
@@ -631,12 +663,12 @@ fn gather_nd<'a>(
                 if is_slice[i] {
                     let mut new_shape = vec![1; max_dims + slice_count];
                     new_shape[max_dims + slice_index] = item.dim(0);
-                    *item = Rc::new(reshape(&item, &new_shape));
+                    *item = Cow::Owned(reshape(&item, &new_shape));
                     slice_index += 1;
                 } else {
                     let mut new_shape = item.shape().to_vec();
                     new_shape.extend((0..slice_count).map(|_| 1));
-                    *item = Rc::new(reshape(&item, &new_shape));
+                    *item = Cow::Owned(reshape(&item, &new_shape));
                 }
             }
         }
@@ -645,7 +677,7 @@ fn gather_nd<'a>(
         for (i, item) in gather_indices[..slice_count].iter_mut().enumerate() {
             let mut new_shape = vec![1; max_dims + slice_count];
             new_shape[i] = item.dim(0);
-            *item = Rc::new(reshape(&item, &new_shape));
+            *item = Cow::Owned(reshape(&item, &new_shape));
         }
     }
 
@@ -728,7 +760,7 @@ fn count_non_new_axis_operations(operations: &[ArrayIndexOp]) -> usize {
 fn expand_ellipsis_operations<'a>(
     ndim: usize,
     operations: &'a [ArrayIndexOp],
-) -> Cow<'a, [ArrayIndexOp]> {
+) -> Cow<'a, [ArrayIndexOp<'a>]> {
     let ellipsis_count = operations
         .iter()
         .filter(|op| matches!(op, ArrayIndexOp::Ellipsis))
@@ -761,7 +793,7 @@ fn expand_ellipsis_operations<'a>(
 
 // See `mlx_get_item` in python/src/indexing.cpp and `getItem` in
 // mlx-swift/Sources/MLX/MLXArray+Indexing.swift
-fn get_item(src: &Array, index: impl ArrayIndex, stream: StreamOrDevice) -> Array {
+fn get_item<'a>(src: &'a Array, index: impl ArrayIndex<'a>, stream: StreamOrDevice) -> Array {
     use ArrayIndexOp::*;
 
     match index.index_op() {
@@ -887,8 +919,9 @@ fn get_item_nd(src: &Array, operations: &[ArrayIndexOp], stream: StreamOrDevice)
     let mut ends: SmallVec<[i32; 4]> = SmallVec::from_slice(src.shape());
     let mut strides: SmallVec<[i32; 4]> = smallvec![1; ndim];
     let mut squeeze_needed = false;
+    let mut axis = 0;
 
-    for (axis, item) in remaining_indices.iter().enumerate() {
+    for item in remaining_indices.iter() {
         match item {
             ExpandDims => continue,
             TakeIndex { mut index } => {
@@ -907,6 +940,8 @@ fn get_item_nd(src: &Array, operations: &[ArrayIndexOp], stream: StreamOrDevice)
             }
             _ => unreachable!("Unexpected item in remaining_indices: {:?}", item),
         }
+
+        axis += 1;
     }
 
     src = Cow::Owned(src.slice_device(&starts, &ends, &strides, stream));
@@ -1184,6 +1219,76 @@ mod tests {
     fn test_full_index_read_single() {
         let a = Array::from_iter(0..60, &[3, 4, 5]);
 
+        // a[...]
         check(a.index(Ellipsis), &[3, 4, 5], 1770);
+
+        // a[None]
+        check(a.index(NewAxis), &[1, 3, 4, 5], 1770);
+
+        // a[0]
+        check(a.index(0), &[4, 5], 190);
+
+        // a[1:3]
+        check(a.index(1..3), &[2, 4, 5], 1580);
+
+        // i = mx.array([2, 1])
+        let i = Array::from_slice(&[2, 1], &[2]);
+
+        // a[i]
+        check(a.index(i), &[2, 4, 5], 1580);
+    }
+
+    #[test]
+    fn test_full_index_read_no_array() {
+        let a = Array::from_iter(0..360, &[2, 3, 4, 5, 3]);
+
+        // a[..., 0]
+        check(a.index((Ellipsis, 0)), &[2, 3, 4, 5], 21420);
+
+        // a[0, ...]
+        check(a.index((0, Ellipsis)), &[3, 4, 5, 3], 16110);
+
+        // a[0, ..., 0]
+        check(a.index((0, Ellipsis, 0)), &[3, 4, 5], 5310);
+
+        // a[..., ::2, :]
+        let result = a.index((Ellipsis, (0..).stride_by(2), ..));
+        check(result, &[2, 3, 4, 3, 3], 38772);
+
+        // a[..., None, ::2, -1]
+        let result = a.index((Ellipsis, NewAxis, (0..).stride_by(2), -1));
+        check(result, &[2, 3, 4, 1, 3], 12996);
+
+        // a[:, 2:, 0]
+        check(a.index((.., 2.., 0)), &[2, 1, 5, 3], 6510);
+
+        // a[::-1, :2, 2:, ..., None, ::2]
+        let result = a.index((
+            (0..).stride_by(-1),
+            ..2,
+            2.., 
+            Ellipsis,
+            NewAxis,
+            (0..).stride_by(2),
+        ));
+        check(result, &[2, 2, 2, 5, 1, 2], 13160);
+    }
+
+    #[test]
+    fn test_full_index_read_array() {
+        // these have an `Array` as a source of indices and go through the gather path
+
+        // a = mx.arange(540).reshape(3, 3, 4, 5, 3)
+        let a = Array::from_iter(0..540, &[3, 3, 4, 5, 3]);
+
+        // i = mx.array([2, 1])
+        let i = Array::from_slice(&[2, 1], &[2]);
+
+        // a[0, i]
+        let result = a.index(&i);
+        // check(a.index((0, &i)), &[2, 4, 5, 3], 14340);
+
+        // a[..., i, 0]
+        check(a.index((Ellipsis, i, 0)), &[3, 3, 4, 2], 19224);
     }
 }
